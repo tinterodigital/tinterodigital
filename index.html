@@ -105,7 +105,10 @@ nav button.active { color: var(--white); }
 .book-card:hover { transform: translateY(-5px); box-shadow: var(--shadow-lg), var(--shadow-glow); border-color: var(--steel-light); }
 @keyframes fadeUp { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
 .book-cover { width: 100%; aspect-ratio: 2/3; overflow: hidden; }
-.book-cover img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.4s; }
+.book-cover img { width: 100%; height: 100%; object-fit: cover; transition: transform 0.4s; opacity: 0; transition: opacity 0.35s ease, transform 0.4s; }
+.book-cover img.loaded { opacity: 1; }
+.book-cover-skeleton { width: 100%; aspect-ratio: 2/3; background: linear-gradient(90deg, var(--silver-3) 25%, var(--silver-2) 50%, var(--silver-3) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; }
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 .book-card:hover .book-cover img { transform: scale(1.04); }
 .book-cover-placeholder { width: 100%; aspect-ratio: 2/3; background: linear-gradient(160deg, var(--navy-mid) 0%, var(--navy-3) 60%, var(--steel) 100%); display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 1.25rem; text-align: center; }
 .placeholder-icon { font-size: 2.5rem; margin-bottom: 0.5rem; opacity: 0.8; }
@@ -289,7 +292,7 @@ nav button.active { color: var(--white); }
           <div class="how-step-num">3</div>
           <div>
             <div class="how-step-title">Envianos el comprobante</div>
-            <div class="how-step-desc">Una vez pagado, enviá el comprobante a <strong>tinterodigitalenpdf@gmail.com</strong> indicando el título del libro.</div>
+            <div class="how-step-desc">Una vez pagado, enviá el comprobante a <strong><a href="/cdn-cgi/l/email-protection" class="__cf_email__" data-cfemail="25514c4b5140574a414c424c514449404b554143654248444c490b464a48">[email&#160;protected]</a></strong> indicando el título del libro.</div>
           </div>
         </div>
         <div class="how-step">
@@ -457,7 +460,7 @@ create policy "admin total"     on books for all   using (true);</code>
 </div>
 <div id="toast" class="toast"></div>
 
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script data-cfasync="false" src="/cdn-cgi/scripts/5c5dd728/cloudflare-static/email-decode.min.js"></script><script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script>
 // ── CONFIG ───────────────────────────────────────
 const PAGE_SIZE    = 50;
@@ -565,33 +568,46 @@ async function loadStorePage(page, filters) {
 
   if (sb) {
     try {
-      let q = sb.from('books').select('*', { count: 'exact' });
-
-      // Combined quick search
-      if (filters.q) {
-        q = q.or(`title.ilike.%${filters.q}%,authors.ilike.%${filters.q}%,publisher.ilike.%${filters.q}%`);
-      }
-      // Advanced filters
-      if (filters.title)     q = q.ilike('title',     `%${filters.title}%`);
-      if (filters.author)    q = q.ilike('authors',   `%${filters.author}%`);
-      if (filters.publisher) q = q.ilike('publisher', `%${filters.publisher}%`);
-      if (filters.year)      q = q.eq('year',          filters.year);
-      if (filters.category)  q = q.ilike('categories', `%${filters.category}%`);
-
-      q = q.order('title').range(offset, offset + PAGE_SIZE - 1);
-
-      const { data, count, error } = await q;
+      const { data, error } = await sb.rpc('search_books', {
+        search_query: filters.q        || '',
+        p_title:      filters.title     || '',
+        p_author:     filters.author    || '',
+        p_publisher:  filters.publisher || '',
+        p_year:       filters.year      || '',
+        p_category:   filters.category  || '',
+        p_limit:      PAGE_SIZE,
+        p_offset:     offset
+      });
       if (error) throw error;
 
-      totalBooks = count || 0;
+      totalBooks = data?.[0]?.total_count || 0;
       renderGrid(data || []);
       renderPagination(page, totalBooks);
       countEl.textContent = `${totalBooks.toLocaleString('es')} libro${totalBooks !== 1 ? 's' : ''} encontrado${totalBooks !== 1 ? 's' : ''}`;
 
-      // Build category pills from catalog (first load only)
       if (page === 1 && !filters.q && !filters.title) buildCategoryPills();
       return;
-    } catch(e) { console.warn('Supabase error', e); }
+    } catch(e) { console.warn('Supabase RPC error, fallback a query directa', e);
+      // Fallback a query directa si la función RPC no existe aún
+      try {
+        let q = sb.from('books').select('*', { count: 'exact' });
+        if (filters.q) q = q.or(`title.ilike.%${filters.q}%,authors.ilike.%${filters.q}%,publisher.ilike.%${filters.q}%`);
+        if (filters.title)     q = q.ilike('title',     '%'+filters.title+'%');
+        if (filters.author)    q = q.ilike('authors',   '%'+filters.author+'%');
+        if (filters.publisher) q = q.ilike('publisher', '%'+filters.publisher+'%');
+        if (filters.year)      q = q.eq('year', filters.year);
+        if (filters.category)  q = q.ilike('categories', '%'+filters.category+'%');
+        q = q.order('title').range(offset, offset + PAGE_SIZE - 1);
+        const { data, count, error: e2 } = await q;
+        if (e2) throw e2;
+        totalBooks = count || 0;
+        renderGrid(data || []);
+        renderPagination(page, totalBooks);
+        countEl.textContent = `${totalBooks.toLocaleString('es')} libro${totalBooks !== 1 ? 's' : ''} encontrado${totalBooks !== 1 ? 's' : ''}`;
+        if (page === 1 && !filters.q && !filters.title) buildCategoryPills();
+        return;
+      } catch(e3) { console.warn('Supabase error', e3); }
+    }
   }
 
   // Fallback: localStorage
@@ -633,9 +649,16 @@ function renderGrid(books) {
     return;
   }
   grid.innerHTML = books.map((b, i) => `
-    <div class="book-card" style="animation-delay:${i*0.03}s">
+    <div class="book-card" style="animation-delay:${i*0.025}s">
       ${b.thumb
-        ? `<div class="book-cover"><img src="${escHtml(b.thumb)}" alt="${escHtml(b.title)}" loading="lazy" onerror="this.parentElement.outerHTML='<div class=book-cover-placeholder><div class=placeholder-icon>📖</div></div>'"/></div>`
+        ? `<div class="book-cover" style="position:relative">
+             <div class="book-cover-skeleton" id="sk-${escHtml(b.id)}"></div>
+             <img src="${escHtml(b.thumb)}" alt="${escHtml(b.title)}"
+               loading="lazy" decoding="async"
+               style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity 0.35s ease"
+               onload="this.style.opacity=1;const sk=document.getElementById('sk-${escHtml(b.id)}');if(sk)sk.style.display='none'"
+               onerror="this.parentElement.outerHTML='<div class=book-cover-placeholder><div class=placeholder-icon>📖</div></div>'"/>
+           </div>`
         : `<div class="book-cover-placeholder"><div class="placeholder-icon">📖</div><div class="placeholder-title">${escHtml(b.title)}</div></div>`}
       <div class="book-info">
         <div class="book-title">${escHtml(b.title)}</div>
@@ -871,12 +894,4 @@ async function saveSettings() {
 function formatPrice(p) { return '$\u00a0' + parseFloat(p||0).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g,','); }
 function escHtml(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
 let toastTimer;
-function showToast(msg) {
-  const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
-}
-
-init();
-</script>
-</body>
-</html>
+function
